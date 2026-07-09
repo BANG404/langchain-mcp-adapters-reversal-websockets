@@ -482,7 +482,7 @@ def convert_mcp_tool_to_langchain_tool(
                 # This change was introduced to work-around an issue in MCP SDK
                 # that may suppress exceptions when the client disconnects.
                 # If this is causing an issue, with your use case, please file an issue
-                # on the langchain-mcp-adapters GitHub repo.
+                # on the langchain-mcp-adapters-reversal-websockets GitHub repo.
                 if captured_exception is not None:
                     raise captured_exception
             else:
