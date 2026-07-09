@@ -3,7 +3,7 @@ requires = ["pdm-backend"]
 build-backend = "pdm.backend"
 
 [project]
-name = "langchain-mcp-adapters"
+name = "langchain-mcp-adapters-reversal-websockets"
 version = "0.3.0"
 description = "Make Anthropic Model Context Protocol (MCP) tools compatible with LangChain and LangGraph agents."
 authors = [
@@ -35,7 +35,7 @@ test = [
 ]
 
 [project.urls]
-repository = "https://www.github.com/langchain-ai/langchain-mcp-adapters"
+repository = "https://www.github.com/BANG404/langchain-mcp-adapters-reversal-websockets"
 
 [tool.pytest.ini_options]
 minversion = "8.0"
@@ -117,4 +117,3 @@ check_untyped_defs = true
     "C901", # Function is too complex
 
 ]
-

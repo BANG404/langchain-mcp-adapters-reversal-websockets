@@ -491,7 +491,7 @@ wheels = [
 ]
 
 [[package]]
-name = "langchain-mcp-adapters"
+name = "langchain-mcp-adapters-reversal-websockets"
 version = "0.3.0"
 source = { editable = "." }
 dependencies = [
