@@ -1,4 +1,4 @@
-.PHONY: all lint format test help
+.PHONY: all lint format test release release_dry_run help
 
 # Default target executed when no arguments are given to make.
 all: help
@@ -15,6 +15,17 @@ test:
 
 test_watch:
 	uv run ptw . -- $(TEST_FILE)
+
+
+######################
+# RELEASE
+######################
+
+release:
+	python3 scripts/release.py
+
+release_dry_run:
+	python3 scripts/release.py --dry-run
 
 
 ######################
@@ -48,6 +59,6 @@ help:
 	@echo '-- TESTS --'
 	@echo 'test                         - run unit tests'
 	@echo 'test TEST_FILE=<test_file>   - run all tests in file'
+	@echo 'release                      - bump version, update changelog, commit, and tag'
+	@echo 'release_dry_run              - show the next release without changing files'
 	@echo '-- DOCUMENTATION tasks are from the top-level Makefile --'
-
-

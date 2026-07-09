@@ -79,6 +79,19 @@ disallow_untyped_defs = true
 check_untyped_defs = true
 
 [tool.ruff.lint.extend-per-file-ignores]
+"scripts/release.py" = [
+    "BLE001", # CLI should report any release failure as a concise error
+    "B904", # CLI exits with status 1 after printing the original error
+    "D103", # Internal release helpers do not need public API docstrings
+    "DTZ011", # Changelog dates intentionally use the local release date
+    "EM101", # CLI errors are clearer inline
+    "EM102", # CLI errors are clearer inline
+    "S603", # Release commands are fixed git invocations built by this script
+    "S607", # Use PATH-resolved developer tools in release automation
+    "T201", # CLI status output is intentional
+    "TRY003", # CLI errors are clearer inline
+    "TRY301", # Keep the CLI entrypoint straightforward
+]
 "tests/**/*.py" = [
     # at least this three should be fine in tests:
     "S101", # asserts allowed in tests...
