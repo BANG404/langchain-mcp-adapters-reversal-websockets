@@ -1,4 +1,8 @@
-"""Reverse WebSocket relay for exposing local MCP servers to cloud agents."""
+"""Reverse WebSocket transport for exposing a local MCP server to cloud agents.
+
+The local process initiates the WebSocket connection, but the messages on that
+connection are standard MCP JSON-RPC messages without a relay envelope.
+"""
 
 from __future__ import annotations
 
@@ -7,7 +11,7 @@ import json
 import logging
 from contextlib import AsyncExitStack, asynccontextmanager
 from datetime import timedelta
-from typing import TYPE_CHECKING, Any, Protocol, Self
+from typing import TYPE_CHECKING, Any, Protocol, Self, cast
 
 import anyio
 import httpx
@@ -18,7 +22,6 @@ from mcp.client.streamable_http import create_mcp_http_client, streamable_http_c
 from mcp.shared.message import SessionMessage
 from mcp.types import JSONRPCMessage
 
-from langchain_mcp_adapters.relay_protocol import REVERSE_WS_PROTOCOL_VERSION
 from langchain_mcp_adapters.sessions import (
     DEFAULT_ENCODING,
     DEFAULT_ENCODING_ERROR_HANDLER,
@@ -39,6 +42,7 @@ if TYPE_CHECKING:
         MemoryObjectReceiveStream,
         MemoryObjectSendStream,
     )
+    from websockets.typing import Subprotocol
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +50,8 @@ DEFAULT_RECONNECT_INTERVAL = 5.0
 
 
 class _WebSocket(Protocol):
+    def __aiter__(self) -> AsyncIterator[str | bytes]: ...
+
     async def send(self, message: str) -> None: ...
 
 
@@ -53,24 +59,19 @@ class ReverseWebSocketRelayError(Exception):
     """Error raised by the reverse WebSocket relay."""
 
 
-class _RelayedSession:
+class _DirectMcpBridge:
     def __init__(
         self,
         *,
-        session_id: str,
-        server_name: str,
         connection: Connection,
         websocket: _WebSocket,
-        send_lock: anyio.Lock,
     ) -> None:
-        self.session_id = session_id
-        self.server_name = server_name
         self.connection = connection
         self.websocket = websocket
-        self.send_lock = send_lock
         self._exit_stack = AsyncExitStack()
         self._write_stream: MemoryObjectSendStream[SessionMessage] | None = None
         self._task_group: anyio.abc.TaskGroup | None = None
+        self._closed = anyio.Event()
 
     async def __aenter__(self) -> Self:
         read_stream, write_stream = await self._exit_stack.enter_async_context(
@@ -82,6 +83,7 @@ class _RelayedSession:
         )
         self._task_group = task_group
         task_group.start_soon(self._forward_local_messages, read_stream)
+        task_group.start_soon(self._forward_websocket_messages)
         return self
 
     async def __aexit__(
@@ -94,44 +96,54 @@ class _RelayedSession:
             self._task_group.cancel_scope.cancel()
         await self._exit_stack.aclose()
 
-    async def send_to_local(self, payload: dict[str, Any]) -> None:
+    async def wait_closed(self) -> None:
+        """Wait until either side of the MCP bridge closes."""
+        await self._closed.wait()
+
+    async def _send_to_local(self, payload: dict[str, Any]) -> None:
         if self._write_stream is None:
-            msg = "Relayed session is not open"
+            msg = "Reverse WebSocket MCP bridge is not open"
             raise ReverseWebSocketRelayError(msg)
         message = JSONRPCMessage.model_validate(payload)
         await self._write_stream.send(SessionMessage(message=message))
+
+    async def _forward_websocket_messages(self) -> None:
+        try:
+            async for raw_message in self.websocket:
+                payload = _decode_json_rpc(raw_message)
+                await self._send_to_local(payload)
+        finally:
+            if self._task_group is not None:
+                self._task_group.cancel_scope.cancel()
+            self._closed.set()
 
     async def _forward_local_messages(
         self,
         read_stream: MemoryObjectReceiveStream[SessionMessage | Exception],
     ) -> None:
-        async with read_stream:
-            async for item in read_stream:
-                if isinstance(item, Exception):
-                    await _send_envelope(
-                        self.websocket,
-                        self.send_lock,
-                        {
-                            "type": "error",
-                            "session_id": self.session_id,
-                            "server": self.server_name,
-                            "message": str(item),
-                        },
-                    )
-                    continue
+        try:
+            async with read_stream:
+                async for item in read_stream:
+                    if isinstance(item, Exception):
+                        logger.exception(
+                            "Local MCP transport emitted an error",
+                            exc_info=item,
+                        )
+                        continue
 
-                await _send_envelope(
-                    self.websocket,
-                    self.send_lock,
-                    {
-                        "type": "mcp_message",
-                        "session_id": self.session_id,
-                        "server": self.server_name,
-                        "payload": item.message.model_dump(
-                            by_alias=True, mode="json", exclude_none=True
-                        ),
-                    },
-                )
+                    await self.websocket.send(
+                        json.dumps(
+                            item.message.model_dump(
+                                by_alias=True,
+                                mode="json",
+                                exclude_none=True,
+                            )
+                        )
+                    )
+        finally:
+            if self._task_group is not None:
+                self._task_group.cancel_scope.cancel()
+            self._closed.set()
 
 
 @asynccontextmanager
@@ -273,12 +285,12 @@ async def run_reverse_websocket_relay(
     reconnect: bool = True,
     reconnect_interval: float = DEFAULT_RECONNECT_INTERVAL,
 ) -> None:
-    """Run a local relay that exposes MCP servers through an outbound WebSocket.
+    """Run a local reverse WebSocket MCP bridge.
 
-    The relay connects to a cloud gateway, sends a `hello` envelope listing the
-    available local servers, and then forwards MCP JSON-RPC messages between the
-    gateway and local MCP transports. Each `(server, session_id)` pair receives
-    its own local MCP transport connection.
+    The local process connects outbound to an agent host. Once connected, the
+    WebSocket carries standard MCP JSON-RPC messages directly, with no relay
+    envelope. Because the stream is naked MCP, exactly one local MCP server can
+    be exposed per WebSocket connection.
     """
     while True:
         try:
@@ -309,7 +321,7 @@ async def connect_reverse_websocket_relay(
     token: str | None = None,
     headers: Mapping[str, str] | None = None,
 ) -> None:
-    """Connect once to a reverse WebSocket gateway and relay until disconnected."""
+    """Connect once to a reverse WebSocket MCP host and bridge until closed."""
     try:
         from websockets.asyncio.client import connect as ws_connect  # noqa: PLC0415
     except ImportError:
@@ -323,148 +335,39 @@ async def connect_reverse_websocket_relay(
     if token is not None:
         additional_headers["Authorization"] = f"Bearer {token}"
 
+    connection = _select_single_connection(connections)
+
     async with ws_connect(
         url,
         additional_headers=additional_headers or None,
-        subprotocols=["mcp-reverse"],
+        subprotocols=[cast("Subprotocol", "mcp")],
     ) as websocket:
-        send_lock = anyio.Lock()
-        sessions: dict[tuple[str, str], _RelayedSession] = {}
-
-        await _send_envelope(
-            websocket,
-            send_lock,
-            {
-                "type": "hello",
-                "protocol_version": REVERSE_WS_PROTOCOL_VERSION,
-                "client_id": client_id,
-                "servers": sorted(connections.keys()),
-            },
-        )
-
-        async with AsyncExitStack() as exit_stack:
-            async for raw_message in websocket:
-                envelope = _decode_envelope(raw_message)
-                message_type = envelope.get("type")
-
-                if message_type == "mcp_message":
-                    await _handle_cloud_mcp_message(
-                        envelope=envelope,
-                        connections=connections,
-                        sessions=sessions,
-                        websocket=websocket,
-                        send_lock=send_lock,
-                        exit_stack=exit_stack,
-                    )
-                elif message_type == "session_closed":
-                    await _close_relayed_session(envelope, sessions)
-                else:
-                    logger.debug("Ignoring relay envelope with type %r", message_type)
-
-
-async def _handle_cloud_mcp_message(
-    *,
-    envelope: dict[str, Any],
-    connections: Mapping[str, Connection],
-    sessions: dict[tuple[str, str], _RelayedSession],
-    websocket: _WebSocket,
-    send_lock: anyio.Lock,
-    exit_stack: AsyncExitStack,
-) -> None:
-    server_name = envelope.get("server")
-    session_id = envelope.get("session_id")
-    payload = envelope.get("payload")
-
-    if not isinstance(server_name, str) or not isinstance(session_id, str):
-        await _send_error(websocket, send_lock, "Missing server or session_id")
-        return
-    if not isinstance(payload, dict):
-        await _send_error(
-            websocket,
-            send_lock,
-            "Missing MCP payload",
-            server=server_name,
-            session_id=session_id,
-        )
-        return
-    if server_name not in connections:
-        await _send_error(
-            websocket,
-            send_lock,
-            f"Unknown local MCP server: {server_name}",
-            server=server_name,
-            session_id=session_id,
-        )
-        return
-
-    key = (server_name, session_id)
-    session = sessions.get(key)
-    if session is None:
-        session = _RelayedSession(
-            session_id=session_id,
-            server_name=server_name,
-            connection=connections[server_name],
+        logger.debug("Reverse WebSocket MCP bridge connected for client %s", client_id)
+        async with _DirectMcpBridge(
+            connection=connection,
             websocket=websocket,
-            send_lock=send_lock,
+        ) as bridge:
+            await bridge.wait_closed()
+
+
+def _select_single_connection(connections: Mapping[str, Connection]) -> Connection:
+    if len(connections) != 1:
+        msg = (
+            "Direct reverse WebSocket MCP carries one naked MCP stream per "
+            "WebSocket connection; pass exactly one local connection."
         )
-        await exit_stack.enter_async_context(session)
-        sessions[key] = session
-
-    await session.send_to_local(payload)
+        raise ReverseWebSocketRelayError(msg)
+    return next(iter(connections.values()))
 
 
-async def _close_relayed_session(
-    envelope: dict[str, Any],
-    sessions: dict[tuple[str, str], _RelayedSession],
-) -> None:
-    session_id = envelope.get("session_id")
-    server_name = envelope.get("server")
-    if not isinstance(session_id, str):
-        return
-
-    keys = [
-        key
-        for key in sessions
-        if key[1] == session_id and (server_name is None or key[0] == server_name)
-    ]
-    for key in keys:
-        session = sessions.pop(key)
-        await session.__aexit__(None, None, None)
-
-
-def _decode_envelope(raw_message: str | bytes) -> dict[str, Any]:
+def _decode_json_rpc(raw_message: str | bytes) -> dict[str, Any]:
     if isinstance(raw_message, bytes):
         raw_message = raw_message.decode()
-    envelope = json.loads(raw_message)
-    if not isinstance(envelope, dict):
-        msg = "Relay envelope must be a JSON object"
+    payload = json.loads(raw_message)
+    if not isinstance(payload, dict):
+        msg = "MCP JSON-RPC message must be a JSON object"
         raise ReverseWebSocketRelayError(msg)
-    return envelope
-
-
-async def _send_error(
-    websocket: _WebSocket,
-    send_lock: anyio.Lock,
-    message: str,
-    *,
-    server: str | None = None,
-    session_id: str | None = None,
-) -> None:
-    envelope: dict[str, Any] = {"type": "error", "message": message}
-    if server is not None:
-        envelope["server"] = server
-    if session_id is not None:
-        envelope["session_id"] = session_id
-    await _send_envelope(websocket, send_lock, envelope)
-
-
-async def _send_envelope(
-    websocket: _WebSocket,
-    send_lock: anyio.Lock,
-    envelope: dict[str, Any],
-) -> None:
-    async with send_lock:
-        await websocket.send(json.dumps(envelope))
+    return payload
 
 
 __all__ = [
