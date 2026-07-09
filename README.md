@@ -11,6 +11,7 @@ This library provides a lightweight wrapper that makes [Anthropic Model Context 
 
 - 🛠️ Convert MCP tools into [LangChain tools](https://python.langchain.com/docs/concepts/tools/) that can be used with [LangGraph](https://github.com/langchain-ai/langgraph) agents
 - 📦 A client implementation that allows you to connect to multiple MCP servers and load tools from them
+- 🔁 A reverse WebSocket relay for exposing local MCP servers to cloud agents through an outbound `wss://` connection
 
 ## Installation
 
@@ -202,6 +203,23 @@ tools = await client.get_tools()
 agent = create_agent("openai:gpt-4.1", tools)
 math_response = await agent.ainvoke({"messages": "what's (3 + 5) x 12?"})
 ```
+
+## Reverse WebSocket Relay
+
+If your MCP server runs on a user's local machine and the cloud cannot connect
+to that local network directly, use the reverse WebSocket relay. The local
+machine opens an outbound `wss://` connection to your cloud gateway, and the
+cloud agent accesses the local MCP server through that tunnel.
+
+```text
+local MCP server -> local relay -> wss:// cloud gateway -> cloud agent
+```
+
+The relay is useful when local MCP servers are behind NAT, firewalls, or a
+developer laptop network that the cloud cannot dial into directly.
+
+- English example and protocol notes:
+  [examples/reverse_websocket_relay/README.md](examples/reverse_websocket_relay/README.md)
 
 ## Passing runtime headers
 
