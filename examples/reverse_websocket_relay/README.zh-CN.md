@@ -1,20 +1,22 @@
-# 反向 WebSocket MCP Relay 示例
+# 反向 WebSocket MCP 示例
 
-本文档说明如何使用反向 MCP，通过 `wss://` 让云服务器访问运行在本地机器上的 MCP 服务器。
+本文档说明如何通过 `wss://` 让云端 Agent 访问运行在本地机器上的 MCP 服务器。
 
 默认英文文档见 [README.md](README.md)。
 
-## 云服务器通过 `wss://` 访问本地 MCP
+## 云端通过 `wss://` 访问本地 MCP
 
-反向 MCP 的部署方式是：云服务器只暴露一个 WebSocket 网关，本地机器主动连到这个网关；云端 Agent 不直接访问本地网络，而是把 MCP JSON-RPC 消息通过这条已建立的 `wss://` 连接转发给本地 MCP 服务器。
+反向 MCP 的部署方式是：云端只暴露一个 WebSocket 入口，本地机器主动连到这个入口；云端 Agent 不直接访问本地网络，而是把标准 MCP JSON-RPC 消息直接发到这条已建立的 `wss://` 连接上。
 
 ```text
-本地 MCP server <--stdio/http/ws--> 本地 relay --wss--> 云端 gateway <--ClientSession--> 云端 Agent
+本地 MCP server <--stdio/http/ws--> 本地 provider --wss--> 云端 Agent Host <--ClientSession--> 云端 Agent
 ```
 
-## 1. 在云服务器上准备 WebSocket 网关
+这条 WebSocket 上没有外层 envelope：没有 `hello`，没有 `mcp_message`，没有 `session_id`，也没有嵌套的 `payload`。每条 WebSocket 连接承载一个裸 MCP 会话。
 
-先用 demo 网关验证链路：
+## 1. 在云服务器上准备 Agent Host
+
+先用 demo Agent Host 验证链路：
 
 ```bash
 uv run --group test python examples/reverse_websocket_relay/cloud_gateway_demo.py \
@@ -22,16 +24,15 @@ uv run --group test python examples/reverse_websocket_relay/cloud_gateway_demo.p
   --port 8765
 ```
 
-生产环境中应把 `cloud_gateway_demo.py` 替换成你自己的云端 gateway 服务。这个服务需要做四件事：
+生产环境中应把 `cloud_gateway_demo.py` 替换成你自己的云端 Agent Host 服务。这个服务需要做三件事：
 
-- 接受本地 relay 发起的 WebSocket 连接，子协议为 `mcp-reverse`。
+- 接受本地 provider 发起的 WebSocket 连接，子协议为 `mcp`。
 - 校验 `Authorization: Bearer <token>` 或你自己的设备认证。
-- 保存 `hello` 包里的 `client_id` 和 `servers`，把它们绑定到当前用户或租户。
-- 当云端 Agent 要调用本地 MCP 工具时，创建 MCP `ClientSession`，并把 session 的读写流转换成 relay envelope。
+- 把 WebSocket 的裸 JSON-RPC 帧桥接成 MCP SDK 的 `ClientSession`，然后执行 `initialize`、`tools/list`、`tools/call` 等标准 MCP 请求。
 
 ## 2. 用 TLS / 反向代理提供 `wss://` 地址
 
-demo 网关本身监听的是普通 `ws://`。公网使用时，让 Nginx、Caddy、负载均衡器或云厂商网关在外层终止 TLS，然后把流量反代到内部服务。
+demo Agent Host 本身监听的是普通 `ws://`。公网使用时，让 Nginx、Caddy、负载均衡器或云厂商网关在外层终止 TLS，然后把流量反代到内部服务。
 
 一个 Nginx 示例：
 
@@ -55,15 +56,15 @@ server {
 }
 ```
 
-配置完成后，本地 relay 连接的地址就是：
+配置完成后，本地 provider 连接的地址就是：
 
 ```text
 wss://mcp.example.com/mcp-tunnel
 ```
 
-## 3. 在本地机器启动 relay
+## 3. 在本地机器启动 provider
 
-本地 relay 负责连接本地 MCP server，并主动连到云端 `wss://` gateway：
+本地 provider 负责连接本地 MCP server，并主动连到云端 `wss://` Agent Host：
 
 ```bash
 uv run --group test python examples/reverse_websocket_relay/local_relay.py \
@@ -90,41 +91,40 @@ await run_reverse_websocket_relay(
                 "@modelcontextprotocol/server-filesystem",
                 "/Users/me/work",
             ],
-        },
-        "local-api": {
-            "transport": "http",
-            "url": "http://127.0.0.1:8000/mcp",
-        },
+        }
     },
 )
 ```
 
-`connections` 里的 key 是云端看到的 MCP server 名称。上面的例子会向云端声明 `filesystem` 和 `local-api` 两个本地 MCP server。
+直连裸 MCP 模式下，每条 WebSocket 只能暴露一个本地 MCP server；如果要暴露多个本地 server，请为每个 server 建立一条独立 WebSocket 连接。
 
-## 4. 在云端 Agent 中使用 relay 暴露的 MCP
+## 4. 在云端 Agent 中使用本地 MCP
 
-云端 gateway 收到本地 relay 的连接后，需要为每次 Agent 会话选择目标 `client_id`、`server` 和 `session_id`，然后把 MCP 消息包在 envelope 里发送给本地 relay：
+云端 Agent Host 收到本地 provider 的连接后，直接在 WebSocket 上发送标准 MCP JSON-RPC。例如初始化请求就是裸 JSON-RPC：
 
 ```json
 {
-  "type": "mcp_message",
-  "session_id": "agent-run-123",
-  "server": "filesystem",
-  "payload": {
-    "jsonrpc": "2.0",
-    "id": 1,
-    "method": "tools/list"
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "initialize",
+  "params": {
+    "protocolVersion": "2025-06-18",
+    "capabilities": {},
+    "clientInfo": {
+      "name": "agent-host",
+      "version": "1.0.0"
+    }
   }
 }
 ```
 
-在云端代码里，`cloud_gateway_demo.py` 展示了最小实现方式：用两个 `anyio` memory stream 把 WebSocket envelope 桥接成 MCP SDK 的 `ClientSession`。接上 LangChain 时，可以继续使用普通 MCP session 的加载方式：
+在云端代码里，`cloud_gateway_demo.py` 展示了最小实现方式：用两个 `anyio` memory stream 把 WebSocket 裸 JSON-RPC 桥接成 MCP SDK 的 `ClientSession`。接上 LangChain 时，可以继续使用普通 MCP session 的加载方式：
 
 ```python
 from langchain.agents import create_agent
 from langchain_mcp_adapters.tools import load_mcp_tools
 
-# session 是 gateway 为某个 client_id/server/session_id 桥接出的 MCP ClientSession。
+# session 是 Agent Host 为这条 WebSocket 桥接出的 MCP ClientSession。
 await session.initialize()
 tools = await load_mcp_tools(session)
 agent = create_agent("openai:gpt-4.1", tools)
@@ -133,14 +133,4 @@ response = await agent.ainvoke({"messages": "列出我的本地项目目录"})
 
 ## 5. 关闭会话
 
-当云端 Agent 不再需要某个本地 MCP 会话时，gateway 应发送：
-
-```json
-{
-  "type": "session_closed",
-  "session_id": "agent-run-123",
-  "server": "filesystem"
-}
-```
-
-本地 relay 收到后会关闭对应 `(server, session_id)` 的本地 MCP transport。`run_reverse_websocket_relay()` 默认会在 WebSocket 断开后重连，适合常驻在用户本地机器上。
+当云端 Agent 不再需要这个本地 MCP 会话时，关闭 WebSocket 即可；本地 provider 会关闭对应的本地 MCP transport。`run_reverse_websocket_relay()` 默认会在 WebSocket 断开后重连，适合常驻在用户本地机器上。

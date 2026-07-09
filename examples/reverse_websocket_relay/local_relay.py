@@ -1,4 +1,4 @@
-"""Local reverse WebSocket relay demo.
+"""Local reverse WebSocket MCP provider demo.
 
 Run this after starting `cloud_gateway_demo.py`.
 """
@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import sys
 from pathlib import Path
 
 from langchain_mcp_adapters.reverse_ws import (
@@ -36,7 +37,7 @@ async def main() -> None:
     connections = {
         "math": {
             "transport": "stdio",
-            "command": "python3",
+            "command": sys.executable,
             "args": [str(math_server)],
         }
     }

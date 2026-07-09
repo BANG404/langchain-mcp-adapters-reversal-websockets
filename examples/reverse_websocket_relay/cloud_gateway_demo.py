@@ -1,4 +1,4 @@
-"""Minimal cloud gateway demo for the reverse WebSocket MCP relay."""
+"""Minimal agent host demo for direct reverse WebSocket MCP."""
 
 # ruff: noqa: T201
 
@@ -34,35 +34,26 @@ def parse_args() -> argparse.Namespace:
 
 
 async def main() -> None:
-    """Run the cloud gateway demo until one relayed tool call completes."""
+    """Run the agent host demo until one remote tool call completes."""
     args = parse_args()
     done = anyio.Event()
 
-    async def handle_relay(websocket: _DemoWebSocket) -> None:
-        hello = json.loads(await websocket.recv())
-        print(
-            "Relay connected: "
-            f"client_id={hello['client_id']} servers={hello['servers']}"
-        )
+    async def handle_provider(websocket: _DemoWebSocket) -> None:
+        print("Local MCP provider connected")
 
-        session_id = "demo-session"
-        server_name = "math"
         to_session_send, to_session_recv = anyio.create_memory_object_stream(100)
         from_session_send, from_session_recv = anyio.create_memory_object_stream(100)
 
-        async def forward_relay_to_session() -> None:
+        async def forward_provider_to_session() -> None:
             async with to_session_send:
                 async for raw_message in websocket:
-                    envelope = json.loads(raw_message)
-                    if envelope["type"] != "mcp_message":
-                        continue
                     await to_session_send.send(
                         SessionMessage(
-                            JSONRPCMessage.model_validate(envelope["payload"])
+                            JSONRPCMessage.model_validate(json.loads(raw_message))
                         )
                     )
 
-        async def forward_session_to_relay() -> None:
+        async def forward_session_to_provider() -> None:
             async with from_session_recv:
                 async for session_message in from_session_recv:
                     payload = session_message.message.model_dump(
@@ -70,26 +61,17 @@ async def main() -> None:
                         mode="json",
                         exclude_none=True,
                     )
-                    await websocket.send(
-                        json.dumps(
-                            {
-                                "type": "mcp_message",
-                                "session_id": session_id,
-                                "server": server_name,
-                                "payload": payload,
-                            }
-                        )
-                    )
+                    await websocket.send(json.dumps(payload))
 
         async with anyio.create_task_group() as task_group:
-            task_group.start_soon(forward_relay_to_session)
-            task_group.start_soon(forward_session_to_relay)
+            task_group.start_soon(forward_provider_to_session)
+            task_group.start_soon(forward_session_to_provider)
 
             async with ClientSession(to_session_recv, from_session_send) as session:
                 await session.initialize()
                 tools = await session.list_tools()
                 tool_names = [tool.name for tool in tools.tools]
-                print(f"Tools exposed through relay: {tool_names}")
+                print(f"Tools exposed through reverse WebSocket: {tool_names}")
 
                 result = await session.call_tool("add", {"a": 2, "b": 3})
                 content = result.content[0]
@@ -98,21 +80,12 @@ async def main() -> None:
                 else:
                     print(f"add(2, 3) returned non-text content: {content!r}")
 
-            await websocket.send(
-                json.dumps(
-                    {
-                        "type": "session_closed",
-                        "session_id": session_id,
-                        "server": server_name,
-                    }
-                )
-            )
             task_group.cancel_scope.cancel()
 
         done.set()
 
-    async with serve(handle_relay, args.host, args.port, subprotocols=["mcp-reverse"]):
-        print(f"Cloud gateway listening on ws://{args.host}:{args.port}")
+    async with serve(handle_provider, args.host, args.port, subprotocols=["mcp"]):
+        print(f"Agent host listening on ws://{args.host}:{args.port}")
         await done.wait()
 
 
