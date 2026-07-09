@@ -11,7 +11,7 @@ import json
 import logging
 from contextlib import AsyncExitStack, asynccontextmanager
 from datetime import timedelta
-from typing import TYPE_CHECKING, Any, Protocol, Self, cast
+from typing import TYPE_CHECKING, Any, Protocol, cast
 
 import anyio
 import httpx
@@ -21,6 +21,7 @@ from mcp.client.stdio import stdio_client
 from mcp.client.streamable_http import create_mcp_http_client, streamable_http_client
 from mcp.shared.message import SessionMessage
 from mcp.types import JSONRPCMessage
+from typing_extensions import Self
 
 from langchain_mcp_adapters.sessions import (
     DEFAULT_ENCODING,
