@@ -220,6 +220,9 @@ developer laptop network that the cloud cannot dial into directly.
 
 - English example and protocol notes:
   [examples/reverse_websocket_relay/README.md](examples/reverse_websocket_relay/README.md)
+- Chinese deployment guide for using `wss://` from a cloud server to access
+  local MCP servers:
+  [examples/reverse_websocket_relay/README.zh-CN.md](examples/reverse_websocket_relay/README.zh-CN.md)
 
 ## Passing runtime headers
 

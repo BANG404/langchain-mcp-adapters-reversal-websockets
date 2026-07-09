@@ -16,6 +16,9 @@ local relay -> cloud gateway -> cloud agent
 Use this when the cloud cannot directly reach the user's local network, but the
 local machine can open an outbound `wss://` connection to your cloud.
 
+For Chinese deployment notes, see
+[README.zh-CN.md](README.zh-CN.md).
+
 ## Files
 
 - `math_server.py`: a small local stdio MCP server with `add` and `multiply`
