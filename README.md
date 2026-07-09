@@ -1,4 +1,4 @@
-# LangChain MCP Adapters
+# LangChain MCP Adapters Reversal WebSockets
 
 This library provides a lightweight wrapper that makes [Anthropic Model Context Protocol (MCP)](https://modelcontextprotocol.io/introduction) tools compatible with [LangChain](https://github.com/langchain-ai/langchain) and [LangGraph](https://github.com/langchain-ai/langgraph).
 
@@ -15,7 +15,7 @@ This library provides a lightweight wrapper that makes [Anthropic Model Context 
 ## Installation
 
 ```bash
-pip install langchain-mcp-adapters
+pip install langchain-mcp-adapters-reversal-websockets
 ```
 
 ## Quickstart
@@ -23,7 +23,7 @@ pip install langchain-mcp-adapters
 Here is a simple example of using the MCP tools with a LangGraph agent.
 
 ```bash
-pip install langchain-mcp-adapters langgraph "langchain[openai]"
+pip install langchain-mcp-adapters-reversal-websockets langgraph "langchain[openai]"
 
 export OPENAI_API_KEY=<your_api_key>
 ```

@@ -41,7 +41,7 @@ uv run --group test python -c "import websockets, mcp"
 For an installed application, make sure `websockets` is available:
 
 ```bash
-pip install langchain-mcp-adapters websockets
+pip install langchain-mcp-adapters-reversal-websockets websockets
 ```
 
 ## Run The Demo
