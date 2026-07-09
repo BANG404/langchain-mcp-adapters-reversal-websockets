@@ -2,6 +2,7 @@ import asyncio
 import contextlib
 import json
 import os
+import sys
 from pathlib import Path
 
 import anyio
@@ -23,29 +24,15 @@ async def test_reverse_websocket_relay_exposes_local_stdio_mcp(
     results = {}
 
     async def handle_cloud_connection(websocket):
-        hello = json.loads(await websocket.recv())
-        assert hello == {
-            "type": "hello",
-            "protocol_version": 1,
-            "client_id": "test-client",
-            "servers": ["math"],
-        }
-
-        session_id = "session-1"
         to_session_send, to_session_recv = anyio.create_memory_object_stream(100)
         from_session_send, from_session_recv = anyio.create_memory_object_stream(100)
 
         async def forward_cloud_to_session():
             async with to_session_send:
                 async for raw_message in websocket:
-                    envelope = json.loads(raw_message)
-                    if envelope["type"] != "mcp_message":
-                        continue
-                    assert envelope["server"] == "math"
-                    assert envelope["session_id"] == session_id
                     await to_session_send.send(
                         SessionMessage(
-                            JSONRPCMessage.model_validate(envelope["payload"])
+                            JSONRPCMessage.model_validate(json.loads(raw_message))
                         )
                     )
 
@@ -54,16 +41,11 @@ async def test_reverse_websocket_relay_exposes_local_stdio_mcp(
                 async for session_message in from_session_recv:
                     await websocket.send(
                         json.dumps(
-                            {
-                                "type": "mcp_message",
-                                "server": "math",
-                                "session_id": session_id,
-                                "payload": session_message.message.model_dump(
-                                    by_alias=True,
-                                    mode="json",
-                                    exclude_none=True,
-                                ),
-                            }
+                            session_message.message.model_dump(
+                                by_alias=True,
+                                mode="json",
+                                exclude_none=True,
+                            )
                         )
                     )
 
@@ -76,15 +58,6 @@ async def test_reverse_websocket_relay_exposes_local_stdio_mcp(
                 tools = await session.list_tools()
                 result = await session.call_tool("add", {"a": 2, "b": 3})
 
-            await websocket.send(
-                json.dumps(
-                    {
-                        "type": "session_closed",
-                        "server": "math",
-                        "session_id": session_id,
-                    }
-                )
-            )
             task_group.cancel_scope.cancel()
 
         results["tool_names"] = {tool.name for tool in tools.tools}
@@ -98,7 +71,7 @@ async def test_reverse_websocket_relay_exposes_local_stdio_mcp(
         handle_cloud_connection,
         "127.0.0.1",
         websocket_server_port,
-        subprotocols=["mcp-reverse"],
+        subprotocols=["mcp"],
     ):
         relay_task = asyncio.create_task(
             connect_reverse_websocket_relay(
@@ -106,7 +79,7 @@ async def test_reverse_websocket_relay_exposes_local_stdio_mcp(
                 client_id="test-client",
                 connections={
                     "math": {
-                        "command": "python3",
+                        "command": sys.executable,
                         "args": [math_server_path],
                         "transport": "stdio",
                     }
